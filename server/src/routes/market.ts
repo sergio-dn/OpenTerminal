@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { cached, cacheGet, cacheStore, staleGet } from "../cache.js";
-import { withFallback } from "../providers/registry.js";
+import { tracked, withFallback } from "../providers/registry.js";
 import * as yahoo from "../providers/yahoo.js";
 import * as stooq from "../providers/stooq.js";
 import * as nasdaq from "../providers/nasdaq.js";
@@ -13,6 +13,7 @@ import * as news from "../providers/news.js";
 import * as econcalendar from "../providers/econcalendar.js";
 import * as finra from "../providers/finra.js";
 import * as secedgar from "../providers/secedgar.js";
+import * as clindicators from "../providers/clindicators.js";
 
 export const marketRouter = Router();
 
@@ -766,6 +767,69 @@ marketRouter.get("/short-volume/:symbol", async (req, res) => {
     const row = day.get(symbol);
     if (!row) return res.json(null);
     res.json({ ...row, shortVolumePercent: (row.shortVolume / row.totalVolume) * 100 });
+  } catch (err) {
+    fail(req, res, err);
+  }
+});
+
+// ---- FX (TradingView forex scanner + Chile's dólar observado) ----
+
+// LatAm-focused board. FX_IDC is TradingView's composite interbank feed,
+// which covers the thinly traded LatAm crosses; FX:EURUSD is the liquid
+// major. USD/ARS is the official rate (not the parallel "blue"/MEP rates),
+// and USD/CNY is onshore — USD/CNH (offshore) is listed alongside it.
+export const FX_PAIRS: Array<{ ticker: string; pair: string; digits: number }> = [
+  { ticker: "FX_IDC:USDCLP", pair: "USD/CLP", digits: 2 },
+  { ticker: "FX_IDC:EURCLP", pair: "EUR/CLP", digits: 2 },
+  { ticker: "FX:EURUSD", pair: "EUR/USD", digits: 5 },
+  { ticker: "FX_IDC:USDCNY", pair: "USD/CNY", digits: 4 },
+  { ticker: "FX_IDC:USDCNH", pair: "USD/CNH", digits: 4 },
+  { ticker: "FX_IDC:USDMXN", pair: "USD/MXN", digits: 4 },
+  { ticker: "FX_IDC:USDCOP", pair: "USD/COP", digits: 2 },
+  { ticker: "FX_IDC:USDPEN", pair: "USD/PEN", digits: 4 },
+  { ticker: "FX_IDC:USDARS", pair: "USD/ARS", digits: 2 },
+];
+
+marketRouter.get("/fx", async (req, res) => {
+  try {
+    const rows = await cached("fx:board", 2_000, () =>
+      tracked("tradingview-fx", () => tradingview.fxScan(FX_PAIRS.map((p) => p.ticker)))
+    );
+    res.json(
+      FX_PAIRS.map((p) => {
+        const r = rows.get(p.ticker);
+        return {
+          pair: p.pair,
+          ticker: p.ticker,
+          digits: p.digits,
+          price: r?.price ?? null,
+          change: r?.change ?? null,
+          changePercent: r?.changePercent ?? null,
+          high: r?.high ?? null,
+          low: r?.low ?? null,
+          perfWeek: r?.perfWeek ?? null,
+          perfMonth: r?.perfMonth ?? null,
+          perfYtd: r?.perfYtd ?? null,
+          perfYear: r?.perfYear ?? null,
+        };
+      })
+    );
+  } catch (err) {
+    fail(req, res, err);
+  }
+});
+
+// Published once per banking day, so a long TTL is plenty — and it keeps a
+// flaky mirror from being hammered by the widget's polling.
+marketRouter.get("/fx/observado", async (req, res) => {
+  try {
+    const data = await cached("fx:observado", 1_800_000, () =>
+      withFallback([
+        ["mindicador", () => clindicators.fromMindicador()],
+        ["boostr", () => clindicators.fromBoostr()],
+      ])
+    );
+    res.json(data);
   } catch (err) {
     fail(req, res, err);
   }
