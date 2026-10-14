@@ -1,8 +1,10 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip } from "recharts";
 import { apiGet, fmt, pctClass } from "../../lib/api";
+import { symbolsParam } from "../../lib/symbol";
 import Flash from "../Flash";
 import { useTerminal } from "../../store/terminal";
 
@@ -29,15 +31,25 @@ type Observado = {
   series: Array<{ date: string; value: number }>;
 };
 
+type SearchResult = { symbol: string; name: string; type: string };
+
 function Pct({ value }: { value: number | null }) {
   return <td className={pctClass(value)}>{value === null ? "—" : `${fmt(value)}%`}</td>;
 }
 
 export default function FxWidget() {
   const setActiveSymbol = useTerminal((s) => s.setActiveSymbol);
+  const fxPairs = useTerminal((s) => s.fxPairs);
+  const addFxPair = useTerminal((s) => s.addFxPair);
+  const removeFxPair = useTerminal((s) => s.removeFxPair);
+  const resetFxPairs = useTerminal((s) => s.resetFxPairs);
+  const [input, setInput] = useState("");
+  const [invalid, setInvalid] = useState(false);
+
   const { data = [], error } = useQuery({
-    queryKey: ["fx"],
-    queryFn: () => apiGet<FxRow[]>("/api/fx"),
+    queryKey: ["fx", fxPairs.join(",")],
+    queryFn: () => apiGet<FxRow[]>(`/api/fx?symbols=${symbolsParam(fxPairs)}`),
+    enabled: fxPairs.length > 0,
     refetchInterval: 2_000,
   });
   // Published once per banking day — no point polling it like a live quote.
@@ -48,9 +60,23 @@ export default function FxWidget() {
     retry: 1,
   });
 
-  if (error) return <div className="p-2 down">Error: {(error as Error).message}</div>;
+  // Resolve free text ("usd/brl", "brl", "real") through the same search the
+  // command palette uses, taking its best FX match.
+  const add = async () => {
+    const q = input.trim();
+    if (!q) return;
+    try {
+      const results = await apiGet<SearchResult[]>(`/api/search?q=${encodeURIComponent(q)}`);
+      const hit = results.find((r) => r.type === "forex");
+      if (!hit) return setInvalid(true);
+      addFxPair(hit.symbol);
+      setInput("");
+    } catch {
+      setInvalid(true);
+    }
+  };
 
-  const spot = data.find((r) => r.pair === "USD/CLP")?.price ?? null;
+  const spot = data.find((r) => r.symbol === "USDCLP=X")?.price ?? null;
   const gap = spot !== null && observado ? spot - observado.value : null;
 
   return (
@@ -85,16 +111,41 @@ export default function FxWidget() {
           </ResponsiveContainer>
         </div>
       )}
-      {data.length === 0 ? (
+      <form
+        className="flex gap-1 p-1"
+        onSubmit={(e) => {
+          e.preventDefault();
+          add();
+        }}
+      >
+        <input
+          value={input}
+          onChange={(e) => {
+            setInput(e.target.value);
+            setInvalid(false);
+          }}
+          placeholder="Add pair… (usd/brl, gbp, yen, uf)"
+          title={invalid ? "No currency pair matches that" : undefined}
+          aria-invalid={invalid}
+          className={`flex-1 ${invalid ? "!border-[var(--down)]" : ""}`}
+        />
+        <button className="term-btn" type="submit">+</button>
+        <button className="term-btn" type="button" onClick={resetFxPairs} title="Restore the default pairs">
+          ↺
+        </button>
+      </form>
+      {error ? (
+        <div className="p-2 down">Error: {(error as Error).message}</div>
+      ) : fxPairs.length > 0 && data.length === 0 ? (
         <div className="p-2 dim">Loading FX…</div>
       ) : (
         <table className="data-table">
           <thead>
-            <tr><th>Pair</th><th>Last</th><th>Chg%</th><th>1W</th><th>1M</th><th>YTD</th><th>1Y</th></tr>
+            <tr><th>Pair</th><th>Last</th><th>Chg%</th><th>1W</th><th>1M</th><th>YTD</th><th>1Y</th><th></th></tr>
           </thead>
           <tbody>
             {data.map((r) => (
-              <tr key={r.ticker} title={`${r.ticker} — click to chart`} onClick={() => setActiveSymbol(r.symbol)}>
+              <tr key={r.symbol} title={`${r.ticker} — click to chart`} onClick={() => setActiveSymbol(r.symbol)}>
                 <td className="!text-left font-bold">{r.pair}</td>
                 <td><Flash value={r.price}>{fmt(r.price, r.digits)}</Flash></td>
                 <td className={pctClass(r.changePercent)}>
@@ -104,6 +155,17 @@ export default function FxWidget() {
                 <Pct value={r.perfMonth} />
                 <Pct value={r.perfYtd} />
                 <Pct value={r.perfYear} />
+                <td>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeFxPair(r.symbol);
+                    }}
+                    className="dim hover:text-[var(--down)]"
+                  >
+                    ✕
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>

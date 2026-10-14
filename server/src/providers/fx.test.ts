@@ -70,23 +70,52 @@ describe("dólar observado", () => {
 });
 
 describe("FX symbols", async () => {
-  const { fxPairFor, searchFx } = await import("../fx.js");
+  const { fxPairFor, searchFx, fxDigits } = await import("../fx.js");
 
-  it("resolves Yahoo-style and bare pair codes, nothing else", () => {
+  it("resolves any known currency pair in =X form, crosses included", () => {
     expect(fxPairFor("USDCLP=X")?.ticker).toBe("FX_IDC:USDCLP");
-    expect(fxPairFor("usdclp")?.pair).toBe("USD/CLP");
-    expect(fxPairFor("CLP")).toBeUndefined();
+    expect(fxPairFor("EURUSD=X")?.ticker).toBe("FX:EURUSD");
+    expect(fxPairFor("brlclp=x")).toMatchObject({ pair: "BRL/CLP", ticker: "FX_IDC:BRLCLP" });
+    expect(fxPairFor("CLFCLP=X")?.name).toContain("Unidad de Fomento");
+  });
+
+  it("rejects bare codes, unknown currencies and same-currency pairs", () => {
+    // A bare six-letter symbol must stay a stock ticker.
+    expect(fxPairFor("USDCLP")).toBeUndefined();
+    expect(fxPairFor("USDXXX=X")).toBeUndefined();
+    expect(fxPairFor("USDUSD=X")).toBeUndefined();
     expect(fxPairFor("AAPL")).toBeUndefined();
   });
 
-  it("matches the common spellings typed into the palette", () => {
-    expect(searchFx("usd/clp").map((r) => r.symbol)).toEqual(["USDCLP=X"]);
+  it("matches the spellings typed into the palette", () => {
+    expect(searchFx("usd/clp")[0]?.symbol).toBe("USDCLP=X");
     expect(searchFx("USD CLP")[0]?.symbol).toBe("USDCLP=X");
-    expect(searchFx("clp").map((r) => r.symbol)).toEqual(["USDCLP=X", "EURCLP=X"]);
-    expect(searchFx("chilean peso").map((r) => r.symbol)).toContain("USDCLP=X");
-    // Too short to mean a currency — don't hijack stock searches.
+    expect(searchFx("brl/clp")[0]?.symbol).toBe("BRLCLP=X");
+    expect(searchFx("brl").map((r) => r.symbol)).toEqual(["USDBRL=X", "EURBRL=X", "BRLCLP=X"]);
+    expect(searchFx("real").map((r) => r.symbol)).toContain("USDBRL=X");
+    expect(searchFx("peso chileno").map((r) => r.symbol)).toContain("USDCLP=X");
+    expect(searchFx("yen japones").map((r) => r.symbol)).toContain("USDJPY=X");
+    expect(searchFx("uf").map((r) => r.symbol)).toEqual(["CLFCLP=X", "USDCLF=X"]);
+    expect(searchFx("clf").map((r) => r.symbol)).toContain("CLFCLP=X");
+  });
+
+  it("suggests pairs in market convention order", () => {
+    expect(searchFx("gbp").map((r) => r.symbol)).toEqual(["GBPUSD=X", "EURGBP=X", "GBPCLP=X"]);
+    expect(searchFx("aud")[0]?.symbol).toBe("AUDUSD=X");
+    // A pair typed explicitly is taken as typed.
+    expect(searchFx("usd/gbp")[0]?.symbol).toBe("USDGBP=X");
+  });
+
+  it("stays out of the way of stock searches", () => {
     expect(searchFx("us")).toEqual([]);
     expect(searchFx("AAPL")).toEqual([]);
+    expect(searchFx("NVDA")).toEqual([]);
+  });
+
+  it("picks decimals by magnitude", () => {
+    expect(fxDigits(993.05)).toBe(2);
+    expect(fxDigits(1.11)).toBe(4);
+    expect(fxDigits(0.00101)).toBe(6);
   });
 });
 

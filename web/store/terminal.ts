@@ -36,6 +36,7 @@ type TerminalState = {
   widgets: WidgetInstance[];
   layout: LayoutItem[];
   watchlist: string[];
+  fxPairs: string[];
   commandOpen: boolean;
   setActiveSymbol: (s: string) => void;
   setCommandOpen: (open: boolean) => void;
@@ -46,8 +47,17 @@ type TerminalState = {
   setLayout: (layout: LayoutItem[]) => void;
   addToWatchlist: (s: string) => void;
   removeFromWatchlist: (s: string) => void;
+  addFxPair: (s: string) => void;
+  removeFxPair: (s: string) => void;
+  resetFxPairs: () => void;
   resetWorkspace: () => void;
 };
+
+// Mirrors DEFAULT_FX_SYMBOLS on the server (server/src/fx.ts).
+const DEFAULT_FX_PAIRS = [
+  "USDCLP=X", "EURCLP=X", "EURUSD=X", "USDCNY=X", "USDCNH=X",
+  "USDMXN=X", "USDCOP=X", "USDPEN=X", "USDARS=X",
+];
 
 const DEFAULT_WIDGETS: WidgetInstance[] = [
   { id: "w-chart", type: "chart", linked: true },
@@ -91,6 +101,7 @@ export const useTerminal = create<TerminalState>()(
       widgets: DEFAULT_WIDGETS,
       layout: DEFAULT_LAYOUT,
       watchlist: ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META", "SPY"],
+      fxPairs: DEFAULT_FX_PAIRS,
       commandOpen: false,
       setActiveSymbol: (s) => {
         const sym = normalizeSymbol(s);
@@ -132,6 +143,10 @@ export const useTerminal = create<TerminalState>()(
         }));
       },
       removeFromWatchlist: (s) => set((st) => ({ watchlist: st.watchlist.filter((x) => x !== s) })),
+      addFxPair: (s) =>
+        set((st) => ({ fxPairs: st.fxPairs.includes(s) ? st.fxPairs : [...st.fxPairs, s] })),
+      removeFxPair: (s) => set((st) => ({ fxPairs: st.fxPairs.filter((x) => x !== s) })),
+      resetFxPairs: () => set({ fxPairs: DEFAULT_FX_PAIRS }),
       resetWorkspace: () => set({ widgets: DEFAULT_WIDGETS, layout: DEFAULT_LAYOUT }),
     }),
     { name: "openterminal-workspace" }

@@ -15,7 +15,7 @@ import * as finra from "../providers/finra.js";
 import * as secedgar from "../providers/secedgar.js";
 import * as clindicators from "../providers/clindicators.js";
 import * as currencyapi from "../providers/currencyapi.js";
-import { FX_PAIRS, fxPairFor, searchFx, type FxPair } from "../fx.js";
+import { DEFAULT_FX_SYMBOLS, fxDigits, fxPairFor, searchFx, type FxPair } from "../fx.js";
 
 export const marketRouter = Router();
 
@@ -299,6 +299,10 @@ marketRouter.get("/history/:symbol", async (req, res) => {
     if (!Array.isArray(data) || data.length === 0) throw new Error("empty history from all providers");
     res.json(data);
   } catch (err) {
+    // A pair with no history source (e.g. the UF) is a known gap, not an outage.
+    if (fxPairFor(symbol) && err instanceof Error && err.message.startsWith("No daily history")) {
+      return res.status(404).json({ error: err.message });
+    }
     fail(req, res, err);
   }
 });
@@ -832,19 +836,26 @@ marketRouter.get("/short-volume/:symbol", async (req, res) => {
 
 // ---- FX (TradingView forex scanner + Chile's dólar observado) ----
 
+// The widget's board: ?symbols=USDCLP=X,USDBRL=X (defaults when omitted).
+// Unknown symbols are dropped; one TradingView request serves the whole board.
 marketRouter.get("/fx", async (req, res) => {
+  const requested = req.query.symbols
+    ? String(req.query.symbols).split(",").map((s) => s.trim().toUpperCase())
+    : DEFAULT_FX_SYMBOLS;
+  const pairs = [...new Set(requested)].map((s) => fxPairFor(s)).filter((p): p is FxPair => !!p).slice(0, 40);
   try {
-    const rows = await cached("fx:board", 2_000, () =>
-      tracked("tradingview-fx", () => tradingview.fxScan(FX_PAIRS.map((p) => p.ticker)))
+    const key = pairs.map((p) => p.symbol).join(",");
+    const rows = await cached(`fx:board:${key}`, 2_000, () =>
+      tracked("tradingview-fx", () => tradingview.fxScan(pairs.map((p) => p.ticker)))
     );
     res.json(
-      FX_PAIRS.map((p) => {
+      pairs.map((p) => {
         const r = rows.get(p.ticker);
         return {
           symbol: p.symbol,
           pair: p.pair,
           ticker: p.ticker,
-          digits: p.digits,
+          digits: fxDigits(r?.price ?? null),
           price: r?.price ?? null,
           change: r?.change ?? null,
           changePercent: r?.changePercent ?? null,

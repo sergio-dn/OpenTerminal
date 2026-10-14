@@ -17,9 +17,8 @@ const MIRRORS = [
   (d: string) => `https://${d}.currency-api.pages.dev/v1/currencies/usd.min.json`,
 ];
 
-// Published days never change, so they're kept for the process lifetime —
-// only the handful of currencies the app charts, to keep memory trivial.
-const KEEP = ["eur", "clp", "cny", "cnh", "mxn", "cop", "pen", "ars"];
+// Published days never change, so they're kept for the process lifetime
+// (~340 rates x a few hundred days is a few MB at most).
 const dayCache = new Map<string, Record<string, number> | null>();
 
 async function fetchDay(date: string): Promise<Record<string, number> | null> {
@@ -34,7 +33,7 @@ async function fetchDay(date: string): Promise<Record<string, number> | null> {
       const json = await res.json();
       const usd = json?.usd ?? {};
       const rates: Record<string, number> = { usd: 1 };
-      for (const k of KEEP) if (typeof usd[k] === "number" && usd[k] > 0) rates[k] = usd[k];
+      for (const [k, v] of Object.entries(usd)) if (typeof v === "number" && v > 0) rates[k] = v;
       dayCache.set(date, rates);
       return rates;
     } catch {
@@ -74,7 +73,7 @@ export async function history(base: string, quote: string, rangeKey: string): Pr
     if (!r || !r[b] || !r[q]) return;
     points.push({ time: Date.parse(`${d}T00:00:00Z`) / 1000, value: r[q] / r[b] });
   });
-  if (points.length < 2) throw new Error(`currency-api: no history for ${base}/${quote}`);
+  if (points.length < 2) throw new Error(`No daily history for ${base}/${quote} (not covered by currency-api)`);
   return points.map((p, i) => {
     const open = i > 0 ? points[i - 1].value : p.value;
     return {
