@@ -4,8 +4,10 @@ import { useQuery } from "@tanstack/react-query";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip } from "recharts";
 import { apiGet, fmt, pctClass } from "../../lib/api";
 import Flash from "../Flash";
+import { useTerminal } from "../../store/terminal";
 
 type FxRow = {
+  symbol: string;
   pair: string;
   ticker: string;
   digits: number;
@@ -32,6 +34,7 @@ function Pct({ value }: { value: number | null }) {
 }
 
 export default function FxWidget() {
+  const setActiveSymbol = useTerminal((s) => s.setActiveSymbol);
   const { data = [], error } = useQuery({
     queryKey: ["fx"],
     queryFn: () => apiGet<FxRow[]>("/api/fx"),
@@ -91,7 +94,7 @@ export default function FxWidget() {
           </thead>
           <tbody>
             {data.map((r) => (
-              <tr key={r.ticker} title={r.ticker}>
+              <tr key={r.ticker} title={`${r.ticker} — click to chart`} onClick={() => setActiveSymbol(r.symbol)}>
                 <td className="!text-left font-bold">{r.pair}</td>
                 <td><Flash value={r.price}>{fmt(r.price, r.digits)}</Flash></td>
                 <td className={pctClass(r.changePercent)}>

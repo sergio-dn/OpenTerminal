@@ -68,3 +68,68 @@ describe("dólar observado", () => {
     await expect(fromBoostr()).rejects.toThrow("origen");
   });
 });
+
+describe("FX symbols", async () => {
+  const { fxPairFor, searchFx } = await import("../fx.js");
+
+  it("resolves Yahoo-style and bare pair codes, nothing else", () => {
+    expect(fxPairFor("USDCLP=X")?.ticker).toBe("FX_IDC:USDCLP");
+    expect(fxPairFor("usdclp")?.pair).toBe("USD/CLP");
+    expect(fxPairFor("CLP")).toBeUndefined();
+    expect(fxPairFor("AAPL")).toBeUndefined();
+  });
+
+  it("matches the common spellings typed into the palette", () => {
+    expect(searchFx("usd/clp").map((r) => r.symbol)).toEqual(["USDCLP=X"]);
+    expect(searchFx("USD CLP")[0]?.symbol).toBe("USDCLP=X");
+    expect(searchFx("clp").map((r) => r.symbol)).toEqual(["USDCLP=X", "EURCLP=X"]);
+    expect(searchFx("chilean peso").map((r) => r.symbol)).toContain("USDCLP=X");
+    // Too short to mean a currency — don't hijack stock searches.
+    expect(searchFx("us")).toEqual([]);
+    expect(searchFx("AAPL")).toEqual([]);
+  });
+});
+
+describe("currency-api history", async () => {
+  const { datesFor, history } = await import("./currencyapi.js");
+
+  it("samples daily for short ranges, weekly for long ones, never before the first published day", () => {
+    const today = new Date("2026-10-14T15:00:00Z");
+    const m = datesFor("1M", today);
+    expect(m[m.length - 1]).toBe("2026-10-14");
+    expect(m.length).toBe(32);
+    expect(datesFor("YTD", today)[0]).toBe("2026-01-01");
+    const max = datesFor("MAX", today);
+    expect(max[0] >= "2024-03-02").toBe(true);
+    expect(max.length).toBeLessThan(140);
+  });
+
+  it("builds base/quote candles from USD-based rates, skipping unpublished days", async () => {
+    const byDate: Record<string, unknown> = {
+      "2026-10-12": { usd: { clp: 980, eur: 0.9 } },
+      "2026-10-13": { usd: { clp: 990, eur: 0.9 } },
+      // 2026-10-14 not published yet -> 404
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        const date = Object.keys(byDate).find((d) => url.includes(d));
+        return Promise.resolve(
+          date ? { ok: true, status: 200, json: async () => byDate[date] } : { ok: false, status: 404, json: async () => ({}) }
+        );
+      })
+    );
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-14T12:00:00Z"));
+    try {
+      const candles = await history("USD", "CLP", "1D");
+      expect(candles.map((c) => c.close)).toEqual([980, 990]);
+      // open = previous close, so the candle shows the day's direction.
+      expect(candles[1]).toMatchObject({ open: 980, high: 990, low: 980, close: 990 });
+      const eurclp = await history("EUR", "CLP", "1D");
+      expect(eurclp[1].close).toBeCloseTo(1100, 6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

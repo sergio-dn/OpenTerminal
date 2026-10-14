@@ -14,6 +14,8 @@ import * as econcalendar from "../providers/econcalendar.js";
 import * as finra from "../providers/finra.js";
 import * as secedgar from "../providers/secedgar.js";
 import * as clindicators from "../providers/clindicators.js";
+import * as currencyapi from "../providers/currencyapi.js";
+import { FX_PAIRS, fxPairFor, searchFx, type FxPair } from "../fx.js";
 
 export const marketRouter = Router();
 
@@ -94,6 +96,37 @@ async function vixHistory(rangeKey: string): Promise<yahoo.Candle[]> {
   });
 }
 
+function fxQuote(symbol: string, p: FxPair, r: tradingview.FxRow): yahoo.Quote {
+  return {
+    symbol,
+    name: `${p.pair} — ${p.name}`,
+    price: r.price,
+    change: r.change,
+    changePercent: r.changePercent,
+    open: r.open,
+    high: r.high,
+    low: r.low,
+    previousClose: r.price !== null && r.change !== null ? r.price - r.change : null,
+    bid: null,
+    ask: null,
+    volume: null,
+    avgVolume: null,
+    marketCap: null,
+    pe: null,
+    eps: null,
+    dividendYield: null,
+    week52High: null,
+    week52Low: null,
+    beta: null,
+    sharesOutstanding: null,
+    currency: p.quote,
+    exchange: "FX",
+    marketState: null,
+    time: null,
+    source: "tradingview",
+  };
+}
+
 // ---- quotes (per-symbol cache, so overlapping widgets share one fetch) ----
 
 /**
@@ -141,6 +174,24 @@ async function getQuotes(symbols: string[]): Promise<yahoo.Quote[]> {
       if (r.status === "fulfilled") fetched.set(vixSymbols[i], r.value);
     });
     remaining = remaining.filter((s) => !fetched.has(s));
+  }
+
+  const fxSymbols = remaining.filter((s) => fxPairFor(s));
+  if (fxSymbols.length > 0) {
+    try {
+      const rows = await tracked("tradingview-fx", () =>
+        tradingview.fxScan(fxSymbols.map((s) => fxPairFor(s)!.ticker))
+      );
+      for (const s of fxSymbols) {
+        const p = fxPairFor(s)!;
+        const r = rows.get(p.ticker);
+        if (r?.price != null) fetched.set(s, fxQuote(s, p, r));
+      }
+    } catch {
+      // falls back to the last-known quote below
+    }
+    // Never send FX symbols on to the stock providers: "USDCLP=X" means nothing to Nasdaq.
+    remaining = remaining.filter((s) => !fxPairFor(s));
   }
 
   const nasdaqResults = await Promise.allSettled(remaining.map((s) => nasdaq.quote(s)));
@@ -235,6 +286,8 @@ marketRouter.get("/history/:symbol", async (req, res) => {
     const data = await cached(`history:${symbol}:${rangeKey}`, HISTORY_TTL, () =>
       binance.CRYPTO_SYMBOLS.has(symbol)
         ? binance.history(symbol, rangeKey)
+        : fxPairFor(symbol)
+        ? tracked("currency-api", () => currencyapi.history(fxPairFor(symbol)!.base, fxPairFor(symbol)!.quote, rangeKey))
         : isVix(symbol)
         ? vixHistory(rangeKey)
         : withFallback([
@@ -269,6 +322,10 @@ function yahooRange(rangeKey: string): { range: string; interval: string } {
 marketRouter.get("/search", async (req, res) => {
   const q = String(req.query.q ?? "").trim();
   if (!q) return res.json([]);
+  // FX pairs are matched locally and listed first — the remote searches
+  // below only return stocks/funds, so "usd/clp" would otherwise find
+  // unrelated tickers like "CLP Holdings".
+  const fx = searchFx(q);
   try {
     const data = await cached(`search:${q.toLowerCase()}`, 300_000, () =>
       withFallback([
@@ -276,8 +333,9 @@ marketRouter.get("/search", async (req, res) => {
         ["yahoo", () => yahoo.search(q)],
       ])
     );
-    res.json(data);
+    res.json([...fx, ...data]);
   } catch (err) {
+    if (fx.length > 0) return res.json(fx);
     fail(req, res, err);
   }
 });
@@ -774,22 +832,6 @@ marketRouter.get("/short-volume/:symbol", async (req, res) => {
 
 // ---- FX (TradingView forex scanner + Chile's dólar observado) ----
 
-// LatAm-focused board. FX_IDC is TradingView's composite interbank feed,
-// which covers the thinly traded LatAm crosses; FX:EURUSD is the liquid
-// major. USD/ARS is the official rate (not the parallel "blue"/MEP rates),
-// and USD/CNY is onshore — USD/CNH (offshore) is listed alongside it.
-export const FX_PAIRS: Array<{ ticker: string; pair: string; digits: number }> = [
-  { ticker: "FX_IDC:USDCLP", pair: "USD/CLP", digits: 2 },
-  { ticker: "FX_IDC:EURCLP", pair: "EUR/CLP", digits: 2 },
-  { ticker: "FX:EURUSD", pair: "EUR/USD", digits: 5 },
-  { ticker: "FX_IDC:USDCNY", pair: "USD/CNY", digits: 4 },
-  { ticker: "FX_IDC:USDCNH", pair: "USD/CNH", digits: 4 },
-  { ticker: "FX_IDC:USDMXN", pair: "USD/MXN", digits: 4 },
-  { ticker: "FX_IDC:USDCOP", pair: "USD/COP", digits: 2 },
-  { ticker: "FX_IDC:USDPEN", pair: "USD/PEN", digits: 4 },
-  { ticker: "FX_IDC:USDARS", pair: "USD/ARS", digits: 2 },
-];
-
 marketRouter.get("/fx", async (req, res) => {
   try {
     const rows = await cached("fx:board", 2_000, () =>
@@ -799,6 +841,7 @@ marketRouter.get("/fx", async (req, res) => {
       FX_PAIRS.map((p) => {
         const r = rows.get(p.ticker);
         return {
+          symbol: p.symbol,
           pair: p.pair,
           ticker: p.ticker,
           digits: p.digits,
